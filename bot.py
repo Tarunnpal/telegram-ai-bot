@@ -108,8 +108,18 @@ def split_text(text: str, max_length: int = 4000) -> List[str]:
     return chunks
 
 
+def _call_gemini_text(model_name: str, prompt: str) -> str:
+    if hasattr(ai_client, "models"):
+        res = ai_client.models.generate_content(model=model_name, contents=prompt)
+        return res.text
+    else:
+        model = ai_client.GenerativeModel(model_name)
+        res = model.generate_content(prompt)
+        return res.text
+
+
 async def generate_ai_response(prompt: str, history: List[Dict[str, str]]) -> str:
-    """Generate response from Gemini API."""
+    """Generate response from Gemini API asynchronously."""
     if not AI_AVAILABLE or not GEMINI_API_KEY:
         return "⚠️ AI service is not configured yet. Please set your GEMINI_API_KEY in the `.env` file."
 
@@ -127,16 +137,8 @@ async def generate_ai_response(prompt: str, history: List[Dict[str, str]]) -> st
 
         for model_name in candidate_models:
             try:
-                if hasattr(ai_client, "models"):
-                    response = ai_client.models.generate_content(
-                        model=model_name,
-                        contents=full_prompt
-                    )
-                    return response.text
-                else:
-                    model = ai_client.GenerativeModel(model_name)
-                    response = model.generate_content(full_prompt)
-                    return response.text
+                text = await asyncio.to_thread(_call_gemini_text, model_name, full_prompt)
+                return text
             except Exception as err:
                 last_error = err
                 logger.warning(f"Model {model_name} failed: {err}. Trying next fallback...")
@@ -272,6 +274,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(chunk)
 
 
+def _call_gemini_photo(model_name: str, caption: str, image: Image.Image) -> str:
+    if hasattr(ai_client, "models"):
+        res = ai_client.models.generate_content(model=model_name, contents=[caption, image])
+        return res.text
+    else:
+        model = ai_client.GenerativeModel(model_name)
+        res = model.generate_content([caption, image])
+        return res.text
+
+
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for photo messages (multimodal image recognition)."""
     if not update.message or not update.message.photo:
@@ -294,18 +306,8 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for model_name in candidate_models:
             try:
-                if hasattr(ai_client, "models"):
-                    response = ai_client.models.generate_content(
-                        model=model_name,
-                        contents=[caption, image]
-                    )
-                    ai_response = response.text
-                    break
-                else:
-                    model = ai_client.GenerativeModel(model_name)
-                    response = model.generate_content([caption, image])
-                    ai_response = response.text
-                    break
+                ai_response = await asyncio.to_thread(_call_gemini_photo, model_name, caption, image)
+                break
             except Exception as err:
                 last_error = err
                 logger.warning(f"Model {model_name} failed: {err}. Trying next fallback...")
