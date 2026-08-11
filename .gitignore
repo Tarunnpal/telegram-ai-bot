@@ -4,6 +4,10 @@
 *.key
 *.pem
 
+# Persistent User Memory Data
+data/memory.json
+data/
+
 # Python Virtual Environments
 venv/
 .venv/

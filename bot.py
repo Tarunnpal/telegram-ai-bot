@@ -1,10 +1,11 @@
 import os
 import sys
+import json
 import html
 import logging
 import io
 import asyncio
-from typing import Dict, List
+from typing import Dict, List, Any
 from dotenv import load_dotenv
 from PIL import Image
 
@@ -14,7 +15,9 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip().strip('"').strip("'")
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip().strip('"').strip("'")
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
-MAX_HISTORY = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
+
+# Path for persistent JSON memory
+MEMORY_FILE = os.path.join(os.path.dirname(__file__), "data", "memory.json")
 
 # Configure logging
 logging.basicConfig(
@@ -67,25 +70,65 @@ except ImportError:
     except ImportError:
         logger.warning("⚠️ Neither 'google-genai' nor 'google-generativeai' module found.")
 
-# Store in-memory native GenAI Chat sessions per user: {chat_id: ChatSession}
-user_chats: Dict[int, Any] = {}
+
+# ---------------- Persistent Memory Manager ----------------
+
+def load_all_memories() -> Dict[str, Any]:
+    """Load all persistent user memory from JSON file."""
+    os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading memory.json: {e}")
+    return {}
 
 
-def get_user_chat(chat_id: int):
-    """Retrieve or create native GenAI chat session for a user."""
-    if chat_id not in user_chats:
-        if hasattr(ai_client, "chats"):
-            user_chats[chat_id] = ai_client.chats.create(model=GEMINI_MODEL_NAME)
-        else:
-            model = ai_client.GenerativeModel(GEMINI_MODEL_NAME)
-            user_chats[chat_id] = model.start_chat(history=[])
-    return user_chats[chat_id]
+def save_all_memories(data: Dict[str, Any]):
+    """Save user memory dictionary to JSON file."""
+    os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
+    try:
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving memory.json: {e}")
 
 
-def clear_history(chat_id: int):
-    """Clear conversation history for a chat ID by re-initializing chat session."""
-    if chat_id in user_chats:
-        del user_chats[chat_id]
+def get_user_memory(chat_id: int, first_name: str = "Friend") -> Dict[str, Any]:
+    """Retrieve memory data for a user."""
+    memories = load_all_memories()
+    key = str(chat_id)
+    if key not in memories:
+        memories[key] = {
+            "first_name": first_name,
+            "history": []
+        }
+        save_all_memories(memories)
+    return memories[key]
+
+
+def append_to_user_history(chat_id: int, user_text: str, ai_text: str, first_name: str = "Friend"):
+    """Append user message and AI response to persistent history."""
+    memories = load_all_memories()
+    key = str(chat_id)
+    if key not in memories:
+        memories[key] = {
+            "first_name": first_name,
+            "history": []
+        }
+    memories[key]["first_name"] = first_name
+    history = memories[key].get("history", [])
+    history.append({"role": "user", "text": user_text})
+    history.append({"role": "model", "text": ai_text})
+    
+    # Retain up to 100 conversation turns (ChatGPT-style persistent depth)
+    if len(history) > 100:
+        memories[key]["history"] = history[-100:]
+    else:
+        memories[key]["history"] = history
+
+    save_all_memories(memories)
 
 
 def split_text(text: str, max_length: int = 4000) -> List[str]:
@@ -105,41 +148,100 @@ def split_text(text: str, max_length: int = 4000) -> List[str]:
     return chunks
 
 
-def _send_chat_message(chat_id: int, prompt: str) -> str:
-    chat = get_user_chat(chat_id)
-    try:
-        res = chat.send_message(prompt)
-        return res.text
-    except Exception as e:
-        logger.warning(f"Chat error: {e}. Recreating chat session for user {chat_id}...")
-        clear_history(chat_id)
-        new_chat = get_user_chat(chat_id)
-        res = new_chat.send_message(prompt)
-        return res.text
+# ---------------- AI Generation with Persistent Context ----------------
+
+def _call_gemini_with_full_context(chat_id: int, first_name: str, prompt: str) -> str:
+    """Worker function to generate ChatGPT-style response with persistent memory."""
+    user_mem = get_user_memory(chat_id, first_name)
+    history = user_mem.get("history", [])
+
+    system_instruction = (
+        f"You are a highly intelligent, personalized AI assistant like ChatGPT and Gemini.\n"
+        f"You are conversing with {first_name}.\n"
+        f"Remember their name, past conversations, personal details, interests, and preferences continuously.\n"
+        f"Maintain a friendly, warm, helpful, and natural conversation tone.\n"
+        f"If the user speaks in Hindi or Hinglish, respond naturally in Hinglish/Hindi."
+    )
+
+    contents = [system_instruction]
+    for msg in history:
+        role_label = "User" if msg["role"] == "user" else "Assistant"
+        contents.append(f"{role_label}: {msg['text']}")
+    contents.append(f"User: {prompt}")
+
+    full_prompt = "\n\n".join(contents)
+
+    candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+    last_error = None
+
+    for model_name in candidate_models:
+        try:
+            if hasattr(ai_client, "models"):
+                res = ai_client.models.generate_content(model=model_name, contents=full_prompt)
+                return res.text
+            else:
+                model = ai_client.GenerativeModel(model_name)
+                res = model.generate_content(full_prompt)
+                return res.text
+        except Exception as err:
+            last_error = err
+            logger.warning(f"Model {model_name} failed: {err}. Trying fallback...")
+            continue
+
+    raise last_error
 
 
-async def generate_ai_response(chat_id: int, prompt: str) -> str:
-    """Generate response from Gemini API asynchronously using native Chat session."""
+async def generate_ai_response(chat_id: int, first_name: str, prompt: str) -> str:
+    """Generate response asynchronously with worker thread."""
     if not AI_AVAILABLE or not GEMINI_API_KEY:
         return "⚠️ AI service is not configured yet. Please set your GEMINI_API_KEY in the `.env` file."
 
     try:
-        return await asyncio.to_thread(_send_chat_message, chat_id, prompt)
+        ai_response = await asyncio.to_thread(_call_gemini_with_full_context, chat_id, first_name, prompt)
+        append_to_user_history(chat_id, prompt, ai_response, first_name)
+        return ai_response
     except Exception as e:
         logger.error(f"Error calling AI API: {e}")
         return f"❌ Sorry, an error occurred while generating AI response:\n<code>{html.escape(str(e))}</code>"
 
 
+def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image.Image) -> str:
+    """Worker function for photo analysis with context."""
+    user_mem = get_user_memory(chat_id, first_name)
+    history = user_mem.get("history", [])
+
+    prompt_context = (
+        f"The user {first_name} sent an image.\n"
+        f"User Caption / Question: {caption}\n"
+        f"Analyze the image and respond helpfully keeping past context in mind."
+    )
+
+    candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+    last_error = None
+
+    for model_name in candidate_models:
+        try:
+            if hasattr(ai_client, "models"):
+                res = ai_client.models.generate_content(model=model_name, contents=[prompt_context, image])
+                return res.text
+            else:
+                model = ai_client.GenerativeModel(model_name)
+                res = model.generate_content([prompt_context, image])
+                return res.text
+        except Exception as err:
+            last_error = err
+            continue
+
+    raise last_error
+
+
 # ---------------- Telegram Bot Handlers ----------------
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
-    """Returns main interactive keyboard buttons."""
+    """Returns main interactive keyboard buttons (without /clear)."""
     keyboard = [
         [
-            InlineKeyboardButton("🧹 Clear Context", callback_data="clear_context"),
-            InlineKeyboardButton("❓ Help", callback_data="show_help")
-        ],
-        [
+            InlineKeyboardButton("❓ Help", callback_data="show_help"),
             InlineKeyboardButton("⚙️ Bot Status", callback_data="show_status")
         ]
     ]
@@ -153,11 +255,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_text = (
         f"👋 <b>Hello, {html.escape(first_name)}!</b>\n\n"
-        f"I am your <b>AI Assistant Bot</b> powered by Google Gemini.\n"
-        f"You can ask me questions, request help with writing, code, ideas, and much more!\n\n"
-        f"<b>Available Commands:</b>\n"
-        f"• Simply type your message to chat with me!\n"
-        f"• /clear - Reset conversation memory\n"
+        f"I am your persistent <b>AI Assistant</b> powered by Google Gemini (ChatGPT-style memory).\n"
+        f"🧠 <b>Persistent Memory Enabled</b>: I remember our past conversations, your details, and context continuously!\n\n"
+        f"<b>Available Options:</b>\n"
+        f"• Simply type any message or send photos to chat with me!\n"
         f"• /help - Display user guide\n"
         f"• /status - Check bot status"
     )
@@ -172,36 +273,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /help command."""
     help_text = (
-        "💡 <b>Bot User Guide & Tips</b>\n\n"
-        "1. <b>Chatting</b>: Send any text message to start asking questions.\n"
-        "2. <b>Context Memory</b>: The bot remembers your recent messages. If you want to start a fresh topic, use /clear.\n"
-        "3. <b>Code & Formatting</b>: Code blocks and formatted responses will be presented cleanly.\n"
-        "4. <b>Privacy</b>: Your chat history is stored locally in memory only during the active session."
+        "💡 <b>ChatGPT-Style AI Assistant Guide</b>\n\n"
+        "1. <b>Chatting & QA</b>: Send any text message to ask questions, write code, or brainstorm ideas.\n"
+        "2. <b>Image Analysis</b>: Send any photo to analyze or ask questions about it.\n"
+        "3. <b>Persistent Memory</b>: Just like ChatGPT & Gemini, your chat history and context are permanently remembered across sessions.\n"
+        "4. <b>Language</b>: Speak in English, Hindi, or Hinglish naturally!"
     )
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
-
-
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for /clear command."""
-    chat_id = update.effective_chat.id
-    clear_history(chat_id)
-    await update.message.reply_text(
-        "🧹 <b>Conversation history cleared!</b>\nYou are now starting a fresh conversation context.",
-        parse_mode=ParseMode.HTML
-    )
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /status command."""
     chat_id = update.effective_chat.id
-    has_active_session = "Yes" if chat_id in user_chats else "No"
+    user_mem = get_user_memory(chat_id)
+    history_turns = len(user_mem.get("history", [])) // 2
     ai_status = "✅ Connected" if AI_AVAILABLE else "❌ Missing GEMINI_API_KEY in .env"
     
     status_text = (
-        f"📊 <b>Bot Status Information</b>\n\n"
-        f"🤖 <b>AI Provider</b>: Google Gemini ({GEMINI_MODEL_NAME})\n"
+        f"📊 <b>Bot Status & Memory Info</b>\n\n"
+        f"🤖 <b>AI Model</b>: Google Gemini ({GEMINI_MODEL_NAME})\n"
         f"🔌 <b>AI Connection</b>: {ai_status}\n"
-        f"💬 <b>Active Chat Session</b>: {has_active_session}"
+        f"🧠 <b>Memory Storage</b>: Persistent Local JSON\n"
+        f"💬 <b>Saved Conversation Turns</b>: {history_turns} turns remembered"
     )
     await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
 
@@ -210,16 +303,8 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """Handler for inline button clicks."""
     query = update.callback_query
     await query.answer()
-    chat_id = query.message.chat_id
 
-    if query.data == "clear_context":
-        clear_history(chat_id)
-        await query.edit_message_text(
-            "🧹 <b>Conversation history cleared!</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_main_keyboard()
-        )
-    elif query.data == "show_help":
+    if query.data == "show_help":
         await help_command(update, context)
     elif query.data == "show_status":
         await status_command(update, context)
@@ -231,13 +316,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+    first_name = update.effective_user.first_name if update.effective_user else "Friend"
     user_text = update.message.text
 
     # Show typing indicator to user
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Generate response using native GenAI chat session
-    ai_response = await generate_ai_response(chat_id, user_text)
+    # Generate response with persistent memory
+    ai_response = await generate_ai_response(chat_id, first_name, user_text)
 
     # Send response in chunks if long
     chunks = split_text(ai_response)
@@ -249,51 +335,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(chunk)
 
 
-def _call_gemini_photo(model_name: str, caption: str, image: Image.Image) -> str:
-    if hasattr(ai_client, "models"):
-        res = ai_client.models.generate_content(model=model_name, contents=[caption, image])
-        return res.text
-    else:
-        model = ai_client.GenerativeModel(model_name)
-        res = model.generate_content([caption, image])
-        return res.text
-
-
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for photo messages (multimodal image recognition)."""
     if not update.message or not update.message.photo:
         return
 
     chat_id = update.effective_chat.id
+    first_name = update.effective_user.first_name if update.effective_user else "Friend"
     caption = update.message.caption or "Analyze this image and describe what you see in detail. Also answer any questions if present."
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        # Get highest resolution photo
         photo_file = await update.message.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
         image = Image.open(io.BytesIO(image_bytes))
 
-        candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
-        ai_response = None
-        last_error = None
-
-        for model_name in candidate_models:
-            try:
-                ai_response = await asyncio.to_thread(_call_gemini_photo, model_name, caption, image)
-                break
-            except Exception as err:
-                last_error = err
-                logger.warning(f"Model {model_name} failed: {err}. Trying next fallback...")
-                continue
-
-        if not ai_response:
-            raise last_error
-
-        # Add to context history
-        add_to_history(chat_id, "user", f"[User sent an image] Caption: {caption}")
-        add_to_history(chat_id, "model", ai_response)
+        ai_response = await asyncio.to_thread(_call_gemini_photo, chat_id, first_name, caption, image)
+        append_to_user_history(chat_id, f"[User sent an image] Caption: {caption}", ai_response, first_name)
 
         chunks = split_text(ai_response)
         for chunk in chunks:
@@ -307,25 +366,22 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Could not analyze the image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
 
-
 def main():
     """Start and run the Telegram bot."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_telegram_bot_token_here":
         print("\n=======================================================")
         print("❌ ERROR: TELEGRAM_BOT_TOKEN is missing or not set!")
         print("Please edit the '.env' file and add your Telegram bot token.")
-        print("Get your token from Telegram by chatting with @BotFather.")
         print("=======================================================\n")
         return
 
-    logger.info("🚀 Starting Telegram AI Bot application...")
+    logger.info("🚀 Starting Persistent ChatGPT-style Telegram AI Bot...")
     
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Register handlers
+    # Register handlers (without /clear)
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
