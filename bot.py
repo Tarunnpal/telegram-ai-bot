@@ -358,6 +358,14 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def get_speak_keyboard() -> InlineKeyboardMarkup:
+    """Returns an inline button to speak out the message as a Voice Note."""
+    keyboard = [
+        [InlineKeyboardButton("🔊 Speak Response", callback_data="speak_last")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /start command - cleans old screen bubbles and shows fresh welcome."""
     chat_id = update.effective_chat.id
@@ -390,13 +398,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /help command."""
     help_text = (
-        "💡 <b>ChatGPT-Style AI Assistant Guide</b>\n\n"
-        "1. <b>Chatting & QA</b>: Send any text message to ask questions, write code, or brainstorm ideas.\n"
+        "💡 <b>FRIDAY AI Assistant Guide</b>\n\n"
+        "1. <b>Chatting & QA</b>: Send any text message to ask questions, write code, or brainstorm.\n"
         "2. <b>Image Analysis</b>: Send any photo to analyze or ask questions about it.\n"
-        "3. <b>Persistent Memory</b>: Just like ChatGPT & Gemini, your chat history and context are permanently remembered across sessions.\n"
-        "4. <b>Language</b>: Speak in English, Hindi, or Hinglish naturally!"
+        "3. <b>Voice Notes 🎙️</b>: Send voice notes to talk with FRIDAY in English, Hindi, or Hinglish.\n"
+        "4. <b>Speak On Demand 🔊</b>:\n"
+        "   • Type <code>/speak Your question</code> to get a spoken voice reply.\n"
+        "   • Tap <b>'🔊 Speak Response'</b> under any message to hear FRIDAY read it out loud!\n"
+        "5. <b>Persistent Memory 🧠</b>: Your chat context is permanently saved."
     )
-    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    if update.message:
+        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    elif update.callback_query and update.callback_query.message:
+        await update.callback_query.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -414,7 +428,69 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🧠 <b>Memory Storage</b>: Persistent Local JSON\n"
         f"💬 <b>Saved Conversation Turns</b>: {history_turns} turns remembered"
     )
-    await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
+    if update.message:
+        await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
+    elif update.callback_query and update.callback_query.message:
+        await update.callback_query.message.reply_text(status_text, parse_mode=ParseMode.HTML)
+
+
+async def speak_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /speak command - generates AI text AND speaks response as voice note."""
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    first_name = update.effective_user.first_name if update.effective_user else "Friend"
+    prompt = " ".join(context.args) if context.args else ""
+
+    await check_and_autoclean_session(context, chat_id, update.message.message_id)
+    track_ui_message_id(chat_id, update.message.message_id)
+
+    if not prompt:
+        # Speak last AI response if no prompt provided
+        user_mem = get_user_memory(chat_id)
+        history = user_mem.get("history", [])
+        if history and history[-1].get("role") == "model":
+            last_reply = history[-1]["parts"][0]
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
+            try:
+                audio_io = io.BytesIO()
+                lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in last_reply) else "en"
+                tts = gTTS(text=last_reply[:500], lang=lang_code)
+                tts.write_to_fp(audio_io)
+                audio_io.seek(0)
+                voice_reply = await update.message.reply_voice(voice=audio_io, caption="🗣️ FRIDAY Voice Reply")
+                track_ui_message_id(chat_id, voice_reply.message_id)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error generating voice: {e}")
+        else:
+            await update.message.reply_text("🗣️ Usage: <code>/speak Your question here</code>", parse_mode=ParseMode.HTML)
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
+    ai_response = await generate_ai_response(chat_id, first_name, prompt)
+
+    # 1. Text response
+    chunks = split_text(ai_response)
+    for chunk in chunks:
+        try:
+            sent_msg = await update.message.reply_text(f"🗣️ <b>FRIDAY Spoken Reply:</b>\n\n{chunk}", parse_mode=ParseMode.HTML)
+            track_ui_message_id(chat_id, sent_msg.message_id)
+        except Exception:
+            sent_msg = await update.message.reply_text(f"🗣️ FRIDAY Spoken Reply:\n\n{chunk}")
+            track_ui_message_id(chat_id, sent_msg.message_id)
+
+    # 2. Voice Note
+    try:
+        audio_io = io.BytesIO()
+        lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in ai_response) else "en"
+        tts = gTTS(text=ai_response[:500], lang=lang_code)
+        tts.write_to_fp(audio_io)
+        audio_io.seek(0)
+        voice_reply = await update.message.reply_voice(voice=audio_io, caption="🗣️ FRIDAY Voice Reply")
+        track_ui_message_id(chat_id, voice_reply.message_id)
+    except Exception as tts_err:
+        logger.warning(f"gTTS voice generation error: {tts_err}")
 
 
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,6 +512,22 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await help_command(update, context)
     elif query.data == "show_status":
         await status_command(update, context)
+    elif query.data == "speak_last":
+        # Speak the message on which button was clicked
+        msg_text = query.message.text or query.message.caption or ""
+        if msg_text:
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
+            try:
+                audio_io = io.BytesIO()
+                clean_text = msg_text.replace("🎙️ FRIDAY Transcribed Reply:", "").replace("🗣️ FRIDAY Spoken Reply:", "").strip()
+                lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in clean_text) else "en"
+                tts = gTTS(text=clean_text[:500], lang=lang_code)
+                tts.write_to_fp(audio_io)
+                audio_io.seek(0)
+                voice_reply = await context.bot.send_voice(chat_id=chat_id, voice=audio_io, caption="🗣️ FRIDAY Voice Reading")
+                track_ui_message_id(chat_id, voice_reply.message_id)
+            except Exception as e:
+                logger.error(f"Error in speak_last: {e}")
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -462,11 +554,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chunks = split_text(ai_response)
     for chunk in chunks:
         try:
-            sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=get_speak_keyboard())
             track_ui_message_id(chat_id, sent_msg.message_id)
         except Exception:
             # Fallback to plain text if markdown parsing fails
-            sent_msg = await update.message.reply_text(chunk)
+            sent_msg = await update.message.reply_text(chunk, reply_markup=get_speak_keyboard())
             track_ui_message_id(chat_id, sent_msg.message_id)
 
 
@@ -573,6 +665,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("speak", speak_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
