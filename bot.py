@@ -4,6 +4,8 @@ import json
 import html
 import logging
 import io
+import re
+import html
 import time
 import asyncio
 from typing import Dict, List, Any
@@ -345,7 +347,63 @@ def _call_gemini_voice(chat_id: int, first_name: str, voice_bytes: bytes) -> str
     raise last_error
 
 
-# ---------------- Telegram Bot Handlers ----------------
+async def live_highlight_read_aloud(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, raw_text: str):
+    """Generates voice audio and animates live sentence-by-sentence highlighting on the message text."""
+    clean_text = raw_text.replace("🎙️ FRIDAY Transcribed Reply:", "").replace("🗣️ FRIDAY Spoken Reply:", "").strip()
+    if not clean_text:
+        return
+
+    # 1. Send Audio Voice Note
+    try:
+        audio_io = io.BytesIO()
+        lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in clean_text) else "en"
+        tts = gTTS(text=clean_text[:500], lang=lang_code)
+        tts.write_to_fp(audio_io)
+        audio_io.seek(0)
+        voice_msg = await context.bot.send_voice(chat_id=chat_id, voice=audio_io, caption="🔊 FRIDAY Audio Reading")
+        track_ui_message_id(chat_id, voice_msg.message_id)
+    except Exception as e:
+        logger.error(f"Error in sending voice note: {e}")
+
+    # 2. Live Highlighting Animation on the message bubble!
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', clean_text) if s.strip()]
+    if not sentences:
+        sentences = [clean_text]
+
+    for i, current_sentence in enumerate(sentences[:10]):
+        highlighted_parts = []
+        for j, s in enumerate(sentences):
+            if j == i:
+                highlighted_parts.append(f"👉 <b><u>{html.escape(s)}</u></b>")
+            else:
+                highlighted_parts.append(html.escape(s))
+        
+        display_text = " ".join(highlighted_parts)
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=display_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_speak_keyboard()
+            )
+            word_count = len(current_sentence.split())
+            delay = max(1.2, min(4.0, word_count * 0.28))
+            await asyncio.sleep(delay)
+        except Exception:
+            pass
+
+    # Restore clean text after reading is complete
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=html.escape(clean_text),
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_speak_keyboard()
+        )
+    except Exception:
+        pass
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
     """Returns main interactive keyboard buttons (clean, uncluttered UI)."""
@@ -359,9 +417,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_speak_keyboard() -> InlineKeyboardMarkup:
-    """Returns an inline button to speak out the message as a Voice Note."""
+    """Returns an inline button to speak out the message as a Voice Note with live text highlighting."""
     keyboard = [
-        [InlineKeyboardButton("🔊 Speak Response", callback_data="speak_last")]
+        [InlineKeyboardButton("🔊 Read & Highlight", callback_data="speak_last")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -513,21 +571,10 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     elif query.data == "show_status":
         await status_command(update, context)
     elif query.data == "speak_last":
-        # Speak the message on which button was clicked
         msg_text = query.message.text or query.message.caption or ""
         if msg_text:
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
-            try:
-                audio_io = io.BytesIO()
-                clean_text = msg_text.replace("🎙️ FRIDAY Transcribed Reply:", "").replace("🗣️ FRIDAY Spoken Reply:", "").strip()
-                lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in clean_text) else "en"
-                tts = gTTS(text=clean_text[:500], lang=lang_code)
-                tts.write_to_fp(audio_io)
-                audio_io.seek(0)
-                voice_reply = await context.bot.send_voice(chat_id=chat_id, voice=audio_io, caption="🗣️ FRIDAY Voice Reading")
-                track_ui_message_id(chat_id, voice_reply.message_id)
-            except Exception as e:
-                logger.error(f"Error in speak_last: {e}")
+            asyncio.create_task(live_highlight_read_aloud(context, chat_id, query.message.message_id, msg_text))
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
