@@ -106,7 +106,7 @@ def split_text(text: str, max_length: int = 4000) -> List[str]:
     return chunks
 
 
-async in_ai_generate(prompt: str, history: List[Dict[str, str]]) -> str:
+async def generate_ai_response(prompt: str, history: List[Dict[str, str]]) -> str:
     """Generate response from Gemini API."""
     if not AI_AVAILABLE or not GEMINI_API_KEY:
         return "⚠️ AI service is not configured yet. Please set your GEMINI_API_KEY in the `.env` file."
@@ -245,7 +245,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Fetch user history and generate response
     history = get_user_history(chat_id)
-    ai_response = await in_ai_generate(user_text, history)
+    ai_response = await generate_ai_response(user_text, history)
 
     # Save to history
     add_to_history(chat_id, "user", user_text)
