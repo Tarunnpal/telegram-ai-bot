@@ -145,7 +145,7 @@ def track_ui_message_id(chat_id: int, message_id: int):
 
 
 async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
-    """Deletes ALL old chat message bubbles INSTANTLY IN ONE GO using Telegram batch delete_messages API."""
+    """Deletes ALL previous chat message bubbles INSTANTLY without deleting the user's current new question."""
     memories = load_all_memories()
     key = str(chat_id)
     tracked_ids = memories.get(key, {}).get("ui_message_ids", [])
@@ -153,8 +153,10 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
     target_ids = set(tracked_ids)
     
     if current_msg_id:
+        # Scan back 100 IDs but EXCLUDE current_msg_id so user's new prompt is NEVER deleted!
         min_id = max(1, current_msg_id - 100)
-        target_ids.update(range(current_msg_id, min_id, -1))
+        target_ids.update(range(current_msg_id - 1, min_id, -1))
+        target_ids.discard(current_msg_id)
     elif tracked_ids:
         max_id = max(tracked_ids)
         min_id = max(1, max_id - 100)
@@ -175,12 +177,12 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                         pass
 
     if key in memories:
-        memories[key]["ui_message_ids"] = []
+        memories[key]["ui_message_ids"] = [current_msg_id] if current_msg_id else []
         save_all_memories(memories)
 
 
-# Auto-clean screen whenever user opens bot / sends message (instant gap)
-INACTIVITY_AUTO_CLEAN_GAP = 0
+# Auto-clean screen if user closes app and comes back (60 seconds session gap)
+INACTIVITY_AUTO_CLEAN_GAP = 60
 
 
 async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
