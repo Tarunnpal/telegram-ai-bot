@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import html
@@ -76,14 +77,23 @@ except ImportError:
 
 
 def _generate_ai_image_bytes(prompt: str) -> bytes:
-    """Worker function to generate AI image bytes using Pollinations AI Engine."""
+    """Worker function to generate AI image bytes ultra-fast (1-2s)."""
     encoded_prompt = urllib.parse.quote(prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true&model=turbo&seed={int(time.time())}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    res = requests.get(url, headers=headers, timeout=25)
-    if res.status_code == 200 and len(res.content) > 1000:
-        return res.content
-    raise ValueError(f"Image generation server returned HTTP {res.status_code}")
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200 and len(res.content) > 1000:
+            return res.content
+    except Exception:
+        pass
+
+    # Fallback url
+    url_fallback = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true&seed={int(time.time())}"
+    res_fb = requests.get(url_fallback, headers=headers, timeout=12)
+    if res_fb.status_code == 200 and len(res_fb.content) > 1000:
+        return res_fb.content
+    raise ValueError(f"Image generation server error HTTP {res_fb.status_code}")
 
 
 # ---------------- Telegram Bot Handlers ----------------
@@ -438,6 +448,7 @@ async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🎨 <b>Usage:</b> <code>/image a futuristic cyberpunk car in Tokyo</code>", parse_mode=ParseMode.HTML)
         return
 
+    progress_msg = await update.message.reply_text("🎨 <b>Generating AI Image...</b> (takes 1-2 seconds)", parse_mode=ParseMode.HTML)
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
 
     try:
@@ -445,9 +456,16 @@ async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption_text = f"🎨 <b>AI Generated Image by FRIDAY</b>\n<i>Prompt: {html.escape(prompt)}</i>"
         sent_photo = await update.message.reply_photo(photo=io.BytesIO(image_bytes), caption=caption_text, parse_mode=ParseMode.HTML)
         track_ui_message_id(chat_id, sent_photo.message_id)
+        try:
+            await progress_msg.delete()
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Error generating AI image: {e}")
-        await update.message.reply_text(f"❌ Could not generate image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        try:
+            await progress_msg.edit_text(f"❌ Could not generate image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
 
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
