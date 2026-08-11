@@ -245,7 +245,7 @@ def _call_gemini_with_full_context(chat_id: int, first_name: str, prompt: str) -
         f"  * DETAILED STYLE: Provide longer, structured, step-by-step explanations ONLY when the user asks for complex topics, coding, tutorials, stories, or detailed breakdowns.\n"
         f"- ROUTE & TRAIN SCHEDULE GUIDANCE (EXACT DIALOGUE FLOW):\n"
         f"  * When asked for trains between Source and Destination, timetables, train numbers, or train info:\n"
-        f"  * List prominent trains running on that route with Train Number, Train Name, Departure Time, Arrival Time, Days of Running, and Travel Duration cleanly formatted.\n"
+        f"  * TRAIN NUMBER LOOKUP: If user types a 5-digit Train Number (e.g., '12952', '12004', '12951', '12002') or train name, immediately provide full details: Train Name, Route (Source -> Destination), Departure & Arrival Timings, Operating Days, and Classes.\n"
         f"  * CRITICAL END QUESTION: At the end of EVERY train-related query response, ALWAYS ask EXACTLY:\n"
         f"    '🎟️ Kya aap ticket book karna chahte hain?'\n"
         f"  * IF USER SAYS YES ('Haan' / 'Yes' / 'Ji haan'): Proceed with booking process — ask for Journey Date, Passenger details, Class (1A/2A/3A/SL), and provide direct official IRCTC (irctc.co.in) booking guidance!\n"
@@ -446,16 +446,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Generate response with persistent memory
     ai_response = await generate_ai_response(chat_id, first_name, user_text)
 
-    # Send response in chunks if long
     chunks = split_text(ai_response)
     for chunk in chunks:
         try:
             sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
             track_ui_message_id(chat_id, sent_msg.message_id)
         except Exception:
-            # Fallback to plain text if markdown parsing fails
-            sent_msg = await update.message.reply_text(chunk)
-            track_ui_message_id(chat_id, sent_msg.message_id)
+            try:
+                sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+                track_ui_message_id(chat_id, sent_msg.message_id)
+            except Exception:
+                sent_msg = await update.message.reply_text(chunk)
+                track_ui_message_id(chat_id, sent_msg.message_id)
 
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
