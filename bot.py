@@ -145,7 +145,7 @@ def track_ui_message_id(chat_id: int, message_id: int):
 
 
 async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
-    """Deletes ALL old chat message bubbles with a cool 50ms staggered visual wipe transition on Telegram."""
+    """Deletes ALL old chat message bubbles INSTANTLY IN ONE GO using Telegram batch delete_messages API."""
     memories = load_all_memories()
     key = str(chat_id)
     tracked_ids = memories.get(key, {}).get("ui_message_ids", [])
@@ -160,21 +160,27 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         min_id = max(1, max_id - 100)
         target_ids.update(range(max_id, min_id, -1))
 
-    # 50ms micro-delay between message deletions creates a cool visual upward vanishing transition!
-    for m_id in sorted(target_ids, reverse=True):
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=m_id)
-            await asyncio.sleep(0.04)
-        except Exception:
-            pass
+    id_list = list(target_ids)
+    if id_list:
+        # Batch delete up to 100 message IDs at once in 1 single instant Telegram API call!
+        for i in range(0, len(id_list), 100):
+            chunk = id_list[i:i+100]
+            try:
+                await context.bot.delete_messages(chat_id=chat_id, message_ids=chunk)
+            except Exception:
+                for m_id in chunk:
+                    try:
+                        await context.bot.delete_message(chat_id=chat_id, message_id=m_id)
+                    except Exception:
+                        pass
 
     if key in memories:
         memories[key]["ui_message_ids"] = []
         save_all_memories(memories)
 
 
-# Auto-clean screen if user closes app and comes back after session gap (3 minutes / 180 seconds)
-INACTIVITY_AUTO_CLEAN_GAP = 180
+# Auto-clean screen whenever user opens bot / sends message (instant gap)
+INACTIVITY_AUTO_CLEAN_GAP = 0
 
 
 async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
