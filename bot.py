@@ -156,10 +156,13 @@ def _call_gemini_with_full_context(chat_id: int, first_name: str, prompt: str) -
     history = user_mem.get("history", [])
 
     system_instruction = (
-        f"You are a highly intelligent, personalized AI assistant like ChatGPT and Gemini.\n"
+        f"YOUR NAME IS FRIDAY (inspired by Tony Stark's AI assistant).\n"
+        f"IMPORTANT IDENTITY INSTRUCTION: You are FRIDAY, an advanced AI Assistant created for {first_name}.\n"
+        f"If anyone asks your name, who you are, or who created you, ALWAYS state clearly and proudly that your name is FRIDAY.\n"
+        f"NEVER call yourself 'Gemini' or 'Google Gemini' when asked for your identity or name.\n"
         f"You are conversing with {first_name}.\n"
         f"Remember their name, past conversations, personal details, interests, and preferences continuously.\n"
-        f"Maintain a friendly, warm, helpful, and natural conversation tone.\n"
+        f"Maintain a smart, helpful, polite, and natural conversation tone.\n"
         f"If the user speaks in Hindi or Hinglish, respond naturally in Hinglish/Hindi."
     )
 
@@ -211,9 +214,9 @@ def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image
     history = user_mem.get("history", [])
 
     prompt_context = (
-        f"The user {first_name} sent an image.\n"
+        f"You are FRIDAY. The user {first_name} sent an image.\n"
         f"User Caption / Question: {caption}\n"
-        f"Analyze the image and respond helpfully keeping past context in mind."
+        f"Analyze the image and respond helpfully keeping past context in mind as FRIDAY."
     )
 
     candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
@@ -255,8 +258,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_text = (
         f"👋 <b>Hello, {html.escape(first_name)}!</b>\n\n"
-        f"I am your persistent <b>AI Assistant</b> powered by Google Gemini (ChatGPT-style memory).\n"
-        f"🧠 <b>Persistent Memory Enabled</b>: I remember our past conversations, your details, and context continuously!\n\n"
+        f"I am <b>FRIDAY</b>, your personal AI Assistant with persistent memory.\n"
+        f"🧠 <b>Memory Enabled</b>: I remember our past conversations, your details, and context continuously!\n\n"
         f"<b>Available Options:</b>\n"
         f"• Simply type any message or send photos to chat with me!\n"
         f"• /help - Display user guide\n"
@@ -291,7 +294,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_text = (
         f"📊 <b>Bot Status & Memory Info</b>\n\n"
-        f"🤖 <b>AI Model</b>: Google Gemini ({GEMINI_MODEL_NAME})\n"
+        f"🤖 <b>AI Name</b>: FRIDAY\n"
+        f"⚡ <b>Engine</b>: Gemini 3.6 Flash\n"
         f"🔌 <b>AI Connection</b>: {ai_status}\n"
         f"🧠 <b>Memory Storage</b>: Persistent Local JSON\n"
         f"💬 <b>Saved Conversation Turns</b>: {history_turns} turns remembered"
