@@ -6,6 +6,7 @@ import logging
 import io
 import time
 import asyncio
+from datetime import datetime
 from typing import Dict, List, Any
 from dotenv import load_dotenv
 from PIL import Image
@@ -222,20 +223,31 @@ def split_text(text: str, max_length: int = 4000) -> List[str]:
 
 # ---------------- AI Generation with Persistent Context ----------------
 
+def get_current_date_info() -> str:
+    """Returns real-time current date, day, and time string."""
+    now = datetime.now()
+    return f"Today is {now.strftime('%A, %B %d, %Y')} (Current Local Time: {now.strftime('%I:%M %p')})"
+
+
 def _call_gemini_with_full_context(chat_id: int, first_name: str, prompt: str) -> str:
-    """Worker function to generate ChatGPT-style response with persistent memory."""
+    """Worker function to generate ChatGPT-style response with persistent memory and AI Calendar capabilities."""
     user_mem = get_user_memory(chat_id, first_name)
     history = user_mem.get("history", [])
+    date_info = get_current_date_info()
 
     system_instruction = (
         f"YOUR NAME IS FRIDAY (inspired by Tony Stark's AI assistant).\n"
-        f"IMPORTANT IDENTITY INSTRUCTION: You are FRIDAY, an advanced AI Assistant created for {first_name}.\n"
-        f"If anyone asks your name, who you are, or who created you, ALWAYS state clearly and proudly that your name is FRIDAY.\n"
-        f"NEVER call yourself 'Gemini' or 'Google Gemini' when asked for your identity or name.\n"
-        f"You are conversing with {first_name}.\n"
-        f"Remember their name, past conversations, personal details, interests, and preferences continuously.\n"
-        f"Maintain a smart, helpful, polite, and natural conversation tone.\n"
-        f"If the user speaks in Hindi or Hinglish, respond naturally in Hinglish/Hindi."
+        f"IMPORTANT IDENTITY & LIVE AI CALENDAR INSTRUCTIONS:\n"
+        f"- You are FRIDAY, an advanced AI Assistant & Smart Calendar created for {first_name}.\n"
+        f"- REAL-TIME LIVE CALENDAR DATA: {date_info}.\n"
+        f"- ALWAYS use this real-time calendar information when asked about today's date, day, month, year, time, or schedule.\n"
+        f"- You function as a smart AI Calendar: answer date calculations, day/week/month queries, schedule planning, and remember user events/dates.\n"
+        f"- If anyone asks your name, ALWAYS state clearly and proudly that your name is FRIDAY.\n"
+        f"- NEVER call yourself 'Gemini' or 'Google Gemini' when asked for your identity or name.\n"
+        f"- You are conversing with {first_name}.\n"
+        f"- Remember their name, past conversations, personal details, interests, events, and preferences continuously.\n"
+        f"- Maintain a smart, helpful, polite, and natural conversation tone.\n"
+        f"- If the user speaks in Hindi or Hinglish, respond naturally in Hinglish/Hindi."
     )
 
     contents = [system_instruction]
@@ -281,12 +293,14 @@ async def generate_ai_response(chat_id: int, first_name: str, prompt: str) -> st
 
 
 def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image.Image) -> str:
-    """Worker function for photo analysis with context."""
+    """Worker function for photo analysis with context and calendar awareness."""
     user_mem = get_user_memory(chat_id, first_name)
     history = user_mem.get("history", [])
+    date_info = get_current_date_info()
 
     prompt_context = (
-        f"You are FRIDAY. The user {first_name} sent an image.\n"
+        f"You are FRIDAY (Smart AI Assistant & Calendar). {date_info}.\n"
+        f"The user {first_name} sent an image.\n"
         f"User Caption / Question: {caption}\n"
         f"Analyze the image and respond helpfully keeping past context in mind as FRIDAY."
     )
