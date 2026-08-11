@@ -67,28 +67,25 @@ except ImportError:
     except ImportError:
         logger.warning("⚠️ Neither 'google-genai' nor 'google-generativeai' module found.")
 
-# Store in-memory conversation history: {chat_id: [{"role": "user"/"model", "text": "..."}]}
-user_conversations: Dict[int, List[Dict[str, str]]] = {}
+# Store in-memory native GenAI Chat sessions per user: {chat_id: ChatSession}
+user_chats: Dict[int, Any] = {}
 
 
-def get_user_history(chat_id: int) -> List[Dict[str, str]]:
-    """Retrieve history list for a chat ID."""
-    if chat_id not in user_conversations:
-        user_conversations[chat_id] = []
-    return user_conversations[chat_id]
-
-
-def add_to_history(chat_id: int, role: str, text: str):
-    """Add a message to history and enforce MAX_HISTORY limit."""
-    history = get_user_history(chat_id)
-    history.append({"role": role, "text": text})
-    if len(history) > MAX_HISTORY:
-        user_conversations[chat_id] = history[-MAX_HISTORY:]
+def get_user_chat(chat_id: int):
+    """Retrieve or create native GenAI chat session for a user."""
+    if chat_id not in user_chats:
+        if hasattr(ai_client, "chats"):
+            user_chats[chat_id] = ai_client.chats.create(model=GEMINI_MODEL_NAME)
+        else:
+            model = ai_client.GenerativeModel(GEMINI_MODEL_NAME)
+            user_chats[chat_id] = model.start_chat(history=[])
+    return user_chats[chat_id]
 
 
 def clear_history(chat_id: int):
-    """Clear conversation history for a chat ID."""
-    user_conversations[chat_id] = []
+    """Clear conversation history for a chat ID by re-initializing chat session."""
+    if chat_id in user_chats:
+        del user_chats[chat_id]
 
 
 def split_text(text: str, max_length: int = 4000) -> List[str]:
@@ -108,43 +105,26 @@ def split_text(text: str, max_length: int = 4000) -> List[str]:
     return chunks
 
 
-def _call_gemini_text(model_name: str, prompt: str) -> str:
-    if hasattr(ai_client, "models"):
-        res = ai_client.models.generate_content(model=model_name, contents=prompt)
+def _send_chat_message(chat_id: int, prompt: str) -> str:
+    chat = get_user_chat(chat_id)
+    try:
+        res = chat.send_message(prompt)
         return res.text
-    else:
-        model = ai_client.GenerativeModel(model_name)
-        res = model.generate_content(prompt)
+    except Exception as e:
+        logger.warning(f"Chat error: {e}. Recreating chat session for user {chat_id}...")
+        clear_history(chat_id)
+        new_chat = get_user_chat(chat_id)
+        res = new_chat.send_message(prompt)
         return res.text
 
 
-async def generate_ai_response(prompt: str, history: List[Dict[str, str]]) -> str:
-    """Generate response from Gemini API asynchronously."""
+async def generate_ai_response(chat_id: int, prompt: str) -> str:
+    """Generate response from Gemini API asynchronously using native Chat session."""
     if not AI_AVAILABLE or not GEMINI_API_KEY:
         return "⚠️ AI service is not configured yet. Please set your GEMINI_API_KEY in the `.env` file."
 
     try:
-        # Build prompt with history
-        contents = []
-        for msg in history:
-            role = "user" if msg["role"] == "user" else "model"
-            contents.append(f"{role.capitalize()}: {msg['text']}")
-        contents.append(f"User: {prompt}")
-        full_prompt = "\n".join(contents)
-
-        candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
-        last_error = None
-
-        for model_name in candidate_models:
-            try:
-                text = await asyncio.to_thread(_call_gemini_text, model_name, full_prompt)
-                return text
-            except Exception as err:
-                last_error = err
-                logger.warning(f"Model {model_name} failed: {err}. Trying next fallback...")
-                continue
-
-        raise last_error
+        return await asyncio.to_thread(_send_chat_message, chat_id, prompt)
     except Exception as e:
         logger.error(f"Error calling AI API: {e}")
         return f"❌ Sorry, an error occurred while generating AI response:\n<code>{html.escape(str(e))}</code>"
@@ -214,14 +194,14 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for /status command."""
     chat_id = update.effective_chat.id
-    history_count = len(get_user_history(chat_id))
+    has_active_session = "Yes" if chat_id in user_chats else "No"
     ai_status = "✅ Connected" if AI_AVAILABLE else "❌ Missing GEMINI_API_KEY in .env"
     
     status_text = (
         f"📊 <b>Bot Status Information</b>\n\n"
         f"🤖 <b>AI Provider</b>: Google Gemini ({GEMINI_MODEL_NAME})\n"
         f"🔌 <b>AI Connection</b>: {ai_status}\n"
-        f"💬 <b>Active Context Messages</b>: {history_count} / {MAX_HISTORY}"
+        f"💬 <b>Active Chat Session</b>: {has_active_session}"
     )
     await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
 
@@ -256,13 +236,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show typing indicator to user
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Fetch user history and generate response
-    history = get_user_history(chat_id)
-    ai_response = await generate_ai_response(user_text, history)
-
-    # Save to history
-    add_to_history(chat_id, "user", user_text)
-    add_to_history(chat_id, "model", ai_response)
+    # Generate response using native GenAI chat session
+    ai_response = await generate_ai_response(chat_id, user_text)
 
     # Send response in chunks if long
     chunks = split_text(ai_response)
