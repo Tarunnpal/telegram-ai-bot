@@ -144,17 +144,29 @@ def track_ui_message_id(chat_id: int, message_id: int):
         save_all_memories(memories)
 
 
-async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    """Deletes old chat message bubbles from Telegram screen WITHOUT touching AI memory."""
+async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
+    """Deletes ALL old chat message bubbles (up to 100 IDs back) from Telegram screen WITHOUT touching AI memory."""
     memories = load_all_memories()
     key = str(chat_id)
+    tracked_ids = memories.get(key, {}).get("ui_message_ids", [])
+    
+    target_ids = set(tracked_ids)
+    
+    if current_msg_id:
+        min_id = max(1, current_msg_id - 100)
+        target_ids.update(range(current_msg_id, min_id, -1))
+    elif tracked_ids:
+        max_id = max(tracked_ids)
+        min_id = max(1, max_id - 100)
+        target_ids.update(range(max_id, min_id, -1))
+
+    for m_id in sorted(target_ids, reverse=True):
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=m_id)
+        except Exception:
+            pass
+
     if key in memories:
-        ids = memories[key].get("ui_message_ids", [])
-        for m_id in ids:
-            try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=m_id)
-            except Exception:
-                pass
         memories[key]["ui_message_ids"] = []
         save_all_memories(memories)
 
@@ -163,7 +175,7 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
 INACTIVITY_AUTO_CLEAN_GAP = 5
 
 
-async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
     """If user returns after closing app / inactivity gap, auto-wipe old screen bubbles while keeping memory 100% intact."""
     memories = load_all_memories()
     key = str(chat_id)
@@ -171,7 +183,7 @@ async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_i
     if key in memories:
         last_active = memories[key].get("last_active_timestamp", 0)
         if last_active > 0 and (now - last_active) > INACTIVITY_AUTO_CLEAN_GAP:
-            await clean_chat_screen_ui(context, chat_id)
+            await clean_chat_screen_ui(context, chat_id, current_msg_id)
         memories[key]["last_active_timestamp"] = now
         save_all_memories(memories)
     else:
@@ -308,8 +320,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     first_name = user.first_name if user else "Friend"
     
-    # Auto-clean previous chat bubbles from screen
-    await clean_chat_screen_ui(context, chat_id)
+    # Auto-clean ALL previous chat bubbles from screen
+    await clean_chat_screen_ui(context, chat_id, update.message.message_id)
 
     welcome_text = (
         f"👋 <b>Hello, {html.escape(first_name)}!</b>\n\n"
@@ -368,7 +380,7 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = query.message.chat_id
 
     if query.data == "clean_screen":
-        await clean_chat_screen_ui(context, chat_id)
+        await clean_chat_screen_ui(context, chat_id, query.message.message_id)
         sent_msg = await context.bot.send_message(
             chat_id=chat_id,
             text="🧹 <b>Chat screen cleaned!</b> (FRIDAY's memory remains 100% saved).",
@@ -392,7 +404,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
 
     # Auto-clean screen bubbles if user is returning after closing Telegram app
-    await check_and_autoclean_session(context, chat_id)
+    await check_and_autoclean_session(context, chat_id, update.message.message_id)
 
     track_ui_message_id(chat_id, update.message.message_id)
 
@@ -423,7 +435,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = update.effective_user.first_name if update.effective_user else "Friend"
     caption = update.message.caption or "Analyze this image and describe what you see in detail. Also answer any questions if present."
 
-    await check_and_autoclean_session(context, chat_id)
+    await check_and_autoclean_session(context, chat_id, update.message.message_id)
     track_ui_message_id(chat_id, update.message.message_id)
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
