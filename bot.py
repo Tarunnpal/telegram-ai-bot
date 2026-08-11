@@ -11,9 +11,9 @@ from PIL import Image
 # Load environment variables from .env file
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip().strip('"').strip("'")
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip().strip('"').strip("'")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
 MAX_HISTORY = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
 
 # Configure logging
@@ -122,18 +122,27 @@ async def generate_ai_response(prompt: str, history: List[Dict[str, str]]) -> st
         contents.append(f"User: {prompt}")
         full_prompt = "\n".join(contents)
 
-        if hasattr(ai_client, "models"):
-            # Using new google-genai SDK
-            response = ai_client.models.generate_content(
-                model=GEMINI_MODEL_NAME,
-                contents=full_prompt
-            )
-            return response.text
-        else:
-            # Using google.generativeai legacy SDK
-            model = ai_client.GenerativeModel(GEMINI_MODEL_NAME)
-            response = model.generate_content(full_prompt)
-            return response.text
+        candidate_models = [GEMINI_MODEL_NAME, "gemini-2.0-flash", "gemini-1.5-flash"]
+        last_error = None
+
+        for model_name in candidate_models:
+            try:
+                if hasattr(ai_client, "models"):
+                    response = ai_client.models.generate_content(
+                        model=model_name,
+                        contents=full_prompt
+                    )
+                    return response.text
+                else:
+                    model = ai_client.GenerativeModel(model_name)
+                    response = model.generate_content(full_prompt)
+                    return response.text
+            except Exception as err:
+                last_error = err
+                logger.warning(f"Model {model_name} failed: {err}. Trying next fallback...")
+                continue
+
+        raise last_error
     except Exception as e:
         logger.error(f"Error calling AI API: {e}")
         return f"❌ Sorry, an error occurred while generating AI response:\n<code>{html.escape(str(e))}</code>"
@@ -279,17 +288,31 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_bytes = await photo_file.download_as_bytearray()
         image = Image.open(io.BytesIO(image_bytes))
 
-        # Generate response using Gemini Vision capabilities
-        if hasattr(ai_client, "models"):
-            response = ai_client.models.generate_content(
-                model=GEMINI_MODEL_NAME,
-                contents=[caption, image]
-            )
-            ai_response = response.text
-        else:
-            model = ai_client.GenerativeModel(GEMINI_MODEL_NAME)
-            response = model.generate_content([caption, image])
-            ai_response = response.text
+        candidate_models = [GEMINI_MODEL_NAME, "gemini-2.0-flash", "gemini-1.5-flash"]
+        ai_response = None
+        last_error = None
+
+        for model_name in candidate_models:
+            try:
+                if hasattr(ai_client, "models"):
+                    response = ai_client.models.generate_content(
+                        model=model_name,
+                        contents=[caption, image]
+                    )
+                    ai_response = response.text
+                    break
+                else:
+                    model = ai_client.GenerativeModel(model_name)
+                    response = model.generate_content([caption, image])
+                    ai_response = response.text
+                    break
+            except Exception as err:
+                last_error = err
+                logger.warning(f"Model {model_name} failed: {err}. Trying next fallback...")
+                continue
+
+        if not ai_response:
+            raise last_error
 
         # Add to context history
         add_to_history(chat_id, "user", f"[User sent an image] Caption: {caption}")
