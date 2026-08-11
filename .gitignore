@@ -1,0 +1,29 @@
+# Secrets and Environment Variables (CRITICAL: NEVER COMMIT SECRETS)
+.env
+*.env
+*.key
+*.pem
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
