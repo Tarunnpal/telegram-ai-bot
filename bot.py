@@ -4,14 +4,11 @@ import json
 import html
 import logging
 import io
-import re
-import html
 import time
 import asyncio
 from typing import Dict, List, Any
 from dotenv import load_dotenv
 from PIL import Image
-from gtts import gTTS
 
 # Load environment variables from .env file
 load_dotenv()
@@ -249,7 +246,7 @@ def _call_gemini_with_full_context(chat_id: int, first_name: str, prompt: str) -
 
     full_prompt = "\n\n".join(contents)
 
-    candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+    candidate_models = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
     last_error = None
 
     for model_name in candidate_models:
@@ -294,7 +291,7 @@ def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image
         f"Analyze the image and respond helpfully keeping past context in mind as FRIDAY."
     )
 
-    candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+    candidate_models = [GEMINI_MODEL_NAME, "gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.6-flash"]
     last_error = None
 
     for model_name in candidate_models:
@@ -313,98 +310,6 @@ def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image
     raise last_error
 
 
-def _call_gemini_voice(chat_id: int, first_name: str, voice_bytes: bytes) -> str:
-    """Worker function for voice note audio transcription & analysis."""
-    user_mem = get_user_memory(chat_id, first_name)
-
-    prompt_context = (
-        f"You are FRIDAY (Tony Stark's AI assistant). The user {first_name} sent a voice message.\n"
-        f"Listen to the audio, understand what {first_name} is saying (English, Hindi, or Hinglish), and respond helpfully as FRIDAY keeping past conversation context in mind."
-    )
-
-    candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
-    last_error = None
-
-    for model_name in candidate_models:
-        try:
-            if hasattr(ai_client, "models"):
-                try:
-                    from google.genai import types
-                    audio_part = types.Part.from_bytes(data=bytes(voice_bytes), mime_type="audio/ogg")
-                    res = ai_client.models.generate_content(model=model_name, contents=[prompt_context, audio_part])
-                    return res.text
-                except Exception:
-                    res = ai_client.models.generate_content(model=model_name, contents=[prompt_context, {"mime_type": "audio/ogg", "data": bytes(voice_bytes)}])
-                    return res.text
-            else:
-                model = ai_client.GenerativeModel(model_name)
-                res = model.generate_content([prompt_context, {"mime_type": "audio/ogg", "data": bytes(voice_bytes)}])
-                return res.text
-        except Exception as err:
-            last_error = err
-            continue
-
-    raise last_error
-
-
-async def live_highlight_read_aloud(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, raw_text: str):
-    """Generates voice audio and animates live sentence-by-sentence highlighting on the message text."""
-    clean_text = raw_text.replace("🎙️ FRIDAY Transcribed Reply:", "").replace("🗣️ FRIDAY Spoken Reply:", "").strip()
-    if not clean_text:
-        return
-
-    # 1. Send Audio Voice Note
-    try:
-        audio_io = io.BytesIO()
-        lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in clean_text) else "en"
-        tts = gTTS(text=clean_text[:500], lang=lang_code)
-        tts.write_to_fp(audio_io)
-        audio_io.seek(0)
-        voice_msg = await context.bot.send_voice(chat_id=chat_id, voice=audio_io, caption="🔊 FRIDAY Audio Reading")
-        track_ui_message_id(chat_id, voice_msg.message_id)
-    except Exception as e:
-        logger.error(f"Error in sending voice note: {e}")
-
-    # 2. Live Highlighting Animation on the message bubble!
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', clean_text) if s.strip()]
-    if not sentences:
-        sentences = [clean_text]
-
-    for i, current_sentence in enumerate(sentences[:10]):
-        highlighted_parts = []
-        for j, s in enumerate(sentences):
-            if j == i:
-                highlighted_parts.append(f"👉 <b><u>{html.escape(s)}</u></b>")
-            else:
-                highlighted_parts.append(html.escape(s))
-        
-        display_text = " ".join(highlighted_parts)
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=display_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_speak_keyboard()
-            )
-            word_count = len(current_sentence.split())
-            delay = max(1.2, min(4.0, word_count * 0.28))
-            await asyncio.sleep(delay)
-        except Exception:
-            pass
-
-    # Restore clean text after reading is complete
-    try:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=html.escape(clean_text),
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_speak_keyboard()
-        )
-    except Exception:
-        pass
-
 def get_main_keyboard() -> InlineKeyboardMarkup:
     """Returns main interactive keyboard buttons (clean, uncluttered UI)."""
     keyboard = [
@@ -412,14 +317,6 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("❓ Help", callback_data="show_help"),
             InlineKeyboardButton("⚙️ Status", callback_data="show_status")
         ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_speak_keyboard() -> InlineKeyboardMarkup:
-    """Returns an inline button to speak out the message as a Voice Note with live text highlighting."""
-    keyboard = [
-        [InlineKeyboardButton("🔊 Read & Highlight", callback_data="speak_last")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -459,11 +356,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 <b>FRIDAY AI Assistant Guide</b>\n\n"
         "1. <b>Chatting & QA</b>: Send any text message to ask questions, write code, or brainstorm.\n"
         "2. <b>Image Analysis</b>: Send any photo to analyze or ask questions about it.\n"
-        "3. <b>Voice Notes 🎙️</b>: Send voice notes to talk with FRIDAY in English, Hindi, or Hinglish.\n"
-        "4. <b>Speak On Demand 🔊</b>:\n"
-        "   • Type <code>/speak Your question</code> to get a spoken voice reply.\n"
-        "   • Tap <b>'🔊 Speak Response'</b> under any message to hear FRIDAY read it out loud!\n"
-        "5. <b>Persistent Memory 🧠</b>: Your chat context is permanently saved."
+        "3. <b>Persistent Memory 🧠</b>: Your chat context and past conversations are permanently saved across sessions."
     )
     if update.message:
         await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
@@ -492,65 +385,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.message.reply_text(status_text, parse_mode=ParseMode.HTML)
 
 
-async def speak_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for /speak command - generates AI text AND speaks response as voice note."""
-    if not update.message:
-        return
-
-    chat_id = update.effective_chat.id
-    first_name = update.effective_user.first_name if update.effective_user else "Friend"
-    prompt = " ".join(context.args) if context.args else ""
-
-    await check_and_autoclean_session(context, chat_id, update.message.message_id)
-    track_ui_message_id(chat_id, update.message.message_id)
-
-    if not prompt:
-        # Speak last AI response if no prompt provided
-        user_mem = get_user_memory(chat_id)
-        history = user_mem.get("history", [])
-        if history and history[-1].get("role") == "model":
-            last_reply = history[-1]["parts"][0]
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
-            try:
-                audio_io = io.BytesIO()
-                lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in last_reply) else "en"
-                tts = gTTS(text=last_reply[:500], lang=lang_code)
-                tts.write_to_fp(audio_io)
-                audio_io.seek(0)
-                voice_reply = await update.message.reply_voice(voice=audio_io, caption="🗣️ FRIDAY Voice Reply")
-                track_ui_message_id(chat_id, voice_reply.message_id)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Error generating voice: {e}")
-        else:
-            await update.message.reply_text("🗣️ Usage: <code>/speak Your question here</code>", parse_mode=ParseMode.HTML)
-        return
-
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
-    ai_response = await generate_ai_response(chat_id, first_name, prompt)
-
-    # 1. Text response
-    chunks = split_text(ai_response)
-    for chunk in chunks:
-        try:
-            sent_msg = await update.message.reply_text(f"🗣️ <b>FRIDAY Spoken Reply:</b>\n\n{chunk}", parse_mode=ParseMode.HTML)
-            track_ui_message_id(chat_id, sent_msg.message_id)
-        except Exception:
-            sent_msg = await update.message.reply_text(f"🗣️ FRIDAY Spoken Reply:\n\n{chunk}")
-            track_ui_message_id(chat_id, sent_msg.message_id)
-
-    # 2. Voice Note
-    try:
-        audio_io = io.BytesIO()
-        lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in ai_response) else "en"
-        tts = gTTS(text=ai_response[:500], lang=lang_code)
-        tts.write_to_fp(audio_io)
-        audio_io.seek(0)
-        voice_reply = await update.message.reply_voice(voice=audio_io, caption="🗣️ FRIDAY Voice Reply")
-        track_ui_message_id(chat_id, voice_reply.message_id)
-    except Exception as tts_err:
-        logger.warning(f"gTTS voice generation error: {tts_err}")
-
-
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for inline button clicks."""
     query = update.callback_query
@@ -570,11 +404,6 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await help_command(update, context)
     elif query.data == "show_status":
         await status_command(update, context)
-    elif query.data == "speak_last":
-        msg_text = query.message.text or query.message.caption or ""
-        if msg_text:
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
-            asyncio.create_task(live_highlight_read_aloud(context, chat_id, query.message.message_id, msg_text))
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -601,11 +430,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chunks = split_text(ai_response)
     for chunk in chunks:
         try:
-            sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN, reply_markup=get_speak_keyboard())
+            sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
             track_ui_message_id(chat_id, sent_msg.message_id)
         except Exception:
             # Fallback to plain text if markdown parsing fails
-            sent_msg = await update.message.reply_text(chunk, reply_markup=get_speak_keyboard())
+            sent_msg = await update.message.reply_text(chunk)
             track_ui_message_id(chat_id, sent_msg.message_id)
 
 
@@ -645,56 +474,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Could not analyze image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
 
-async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for voice notes and audio messages."""
-    if not update.message or (not update.message.voice and not update.message.audio):
-        return
-
-    chat_id = update.effective_chat.id
-    first_name = update.effective_user.first_name if update.effective_user else "Friend"
-
-    await check_and_autoclean_session(context, chat_id, update.message.message_id)
-    track_ui_message_id(chat_id, update.message.message_id)
-
-    # Show voice action indicator
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
-
-    try:
-        voice_obj = update.message.voice or update.message.audio
-        voice_file = await voice_obj.get_file()
-        voice_bytes = await voice_file.download_as_bytearray()
-
-        # 1. AI processing with Gemini Audio
-        ai_response = await asyncio.to_thread(_call_gemini_voice, chat_id, first_name, voice_bytes)
-        append_to_user_history(chat_id, "[User sent a voice message]", ai_response, first_name)
-
-        # 2. Reply in Text
-        chunks = split_text(ai_response)
-        for chunk in chunks:
-            try:
-                sent_msg = await update.message.reply_text(f"🎙️ <b>FRIDAY Transcribed Reply:</b>\n\n{chunk}", parse_mode=ParseMode.HTML)
-                track_ui_message_id(chat_id, sent_msg.message_id)
-            except Exception:
-                sent_msg = await update.message.reply_text(f"🎙️ FRIDAY Transcribed Reply:\n\n{chunk}")
-                track_ui_message_id(chat_id, sent_msg.message_id)
-
-        # 3. Generate Audio Voice Note Reply using gTTS
-        try:
-            audio_io = io.BytesIO()
-            lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in ai_response) else "en"
-            tts = gTTS(text=ai_response[:400], lang=lang_code)
-            tts.write_to_fp(audio_io)
-            audio_io.seek(0)
-            voice_reply = await update.message.reply_voice(voice=audio_io, caption="🗣️ FRIDAY Voice Note")
-            track_ui_message_id(chat_id, voice_reply.message_id)
-        except Exception as tts_err:
-            logger.warning(f"gTTS audio generation error: {tts_err}")
-
-    except Exception as e:
-        logger.error(f"Error processing voice message: {e}")
-        await update.message.reply_text(f"❌ Could not process voice message:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
-
-
 def main():
     """Start and run the Telegram bot."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_telegram_bot_token_here":
@@ -708,13 +487,11 @@ def main():
     
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Register handlers (without /clear)
+    # Register handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("speak", speak_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
