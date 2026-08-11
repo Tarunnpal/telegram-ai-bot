@@ -13,7 +13,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip().strip('"').strip("'")
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip().strip('"').strip("'")
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
 MAX_HISTORY = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
 
 # Configure logging
@@ -122,7 +122,7 @@ async def generate_ai_response(prompt: str, history: List[Dict[str, str]]) -> st
         contents.append(f"User: {prompt}")
         full_prompt = "\n".join(contents)
 
-        candidate_models = [GEMINI_MODEL_NAME, "gemini-2.0-flash", "gemini-1.5-flash"]
+        candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
         last_error = None
 
         for model_name in candidate_models:
@@ -288,7 +288,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_bytes = await photo_file.download_as_bytearray()
         image = Image.open(io.BytesIO(image_bytes))
 
-        candidate_models = [GEMINI_MODEL_NAME, "gemini-2.0-flash", "gemini-1.5-flash"]
+        candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
         ai_response = None
         last_error = None
 
