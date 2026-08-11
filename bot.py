@@ -131,6 +131,33 @@ def append_to_user_history(chat_id: int, user_text: str, ai_text: str, first_nam
     save_all_memories(memories)
 
 
+def track_ui_message_id(chat_id: int, message_id: int):
+    """Track Telegram UI message IDs to allow cleaning chat bubbles later."""
+    memories = load_all_memories()
+    key = str(chat_id)
+    if key in memories:
+        ids = memories[key].get("ui_message_ids", [])
+        if message_id not in ids:
+            ids.append(message_id)
+        memories[key]["ui_message_ids"] = ids[-100:]
+        save_all_memories(memories)
+
+
+async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Deletes old chat message bubbles from Telegram screen WITHOUT touching AI memory."""
+    memories = load_all_memories()
+    key = str(chat_id)
+    if key in memories:
+        ids = memories[key].get("ui_message_ids", [])
+        for m_id in ids:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=m_id)
+            except Exception:
+                pass
+        memories[key]["ui_message_ids"] = []
+        save_all_memories(memories)
+
+
 def split_text(text: str, max_length: int = 4000) -> List[str]:
     """Split long responses into chunk sizes allowed by Telegram."""
     if len(text) <= max_length:
@@ -241,36 +268,44 @@ def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image
 # ---------------- Telegram Bot Handlers ----------------
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
-    """Returns main interactive keyboard buttons (without /clear)."""
+    """Returns main interactive keyboard buttons."""
     keyboard = [
         [
+            InlineKeyboardButton("🧹 Clean Screen", callback_data="clean_screen"),
             InlineKeyboardButton("❓ Help", callback_data="show_help"),
-            InlineKeyboardButton("⚙️ Bot Status", callback_data="show_status")
+            InlineKeyboardButton("⚙️ Status", callback_data="show_status")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for /start command."""
+    """Handler for /start command - cleans old screen bubbles and shows fresh welcome."""
+    chat_id = update.effective_chat.id
     user = update.effective_user
     first_name = user.first_name if user else "Friend"
     
+    # Auto-clean previous chat bubbles from screen
+    await clean_chat_screen_ui(context, chat_id)
+
     welcome_text = (
         f"👋 <b>Hello, {html.escape(first_name)}!</b>\n\n"
         f"I am <b>FRIDAY</b>, your personal AI Assistant with persistent memory.\n"
-        f"🧠 <b>Memory Enabled</b>: I remember our past conversations, your details, and context continuously!\n\n"
-        f"<b>Available Options:</b>\n"
-        f"• Simply type any message or send photos to chat with me!\n"
+        f"🧠 <b>Memory Active</b>: I remember all our past conversations and context continuously!\n"
+        f"🧹 <b>Clean Screen</b>: Use /start or tap 'Clean Screen' anytime to wipe old message bubbles from view.\n\n"
+        f"<b>Options:</b>\n"
+        f"• Simply type any message or send photos to chat!\n"
         f"• /help - Display user guide\n"
         f"• /status - Check bot status"
     )
     
-    await update.message.reply_text(
+    sent_msg = await update.message.reply_text(
         welcome_text,
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
+    track_ui_message_id(chat_id, update.message.message_id)
+    track_ui_message_id(chat_id, sent_msg.message_id)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,8 +342,18 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """Handler for inline button clicks."""
     query = update.callback_query
     await query.answer()
+    chat_id = query.message.chat_id
 
-    if query.data == "show_help":
+    if query.data == "clean_screen":
+        await clean_chat_screen_ui(context, chat_id)
+        sent_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="🧹 <b>Chat screen cleaned!</b> (FRIDAY's memory remains 100% saved).",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+        track_ui_message_id(chat_id, sent_msg.message_id)
+    elif query.data == "show_help":
         await help_command(update, context)
     elif query.data == "show_status":
         await status_command(update, context)
@@ -323,6 +368,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = update.effective_user.first_name if update.effective_user else "Friend"
     user_text = update.message.text
 
+    track_ui_message_id(chat_id, update.message.message_id)
+
     # Show typing indicator to user
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
@@ -333,10 +380,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chunks = split_text(ai_response)
     for chunk in chunks:
         try:
-            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            track_ui_message_id(chat_id, sent_msg.message_id)
         except Exception:
             # Fallback to plain text if markdown parsing fails
-            await update.message.reply_text(chunk)
+            sent_msg = await update.message.reply_text(chunk)
+            track_ui_message_id(chat_id, sent_msg.message_id)
 
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
