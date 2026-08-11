@@ -2,9 +2,11 @@ import os
 import sys
 import html
 import logging
+import io
 import asyncio
 from typing import Dict, List
 from dotenv import load_dotenv
+from PIL import Image
 
 # Load environment variables from .env file
 load_dotenv()
@@ -261,6 +263,51 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(chunk)
 
 
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for photo messages (multimodal image recognition)."""
+    if not update.message or not update.message.photo:
+        return
+
+    chat_id = update.effective_chat.id
+    caption = update.message.caption or "Analyze this image and describe what you see in detail. Also answer any questions if present."
+
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+    try:
+        # Get highest resolution photo
+        photo_file = await update.message.photo[-1].get_file()
+        image_bytes = await photo_file.download_as_bytearray()
+        image = Image.open(io.BytesIO(image_bytes))
+
+        # Generate response using Gemini Vision capabilities
+        if hasattr(ai_client, "models"):
+            response = ai_client.models.generate_content(
+                model=GEMINI_MODEL_NAME,
+                contents=[caption, image]
+            )
+            ai_response = response.text
+        else:
+            model = ai_client.GenerativeModel(GEMINI_MODEL_NAME)
+            response = model.generate_content([caption, image])
+            ai_response = response.text
+
+        # Add to context history
+        add_to_history(chat_id, "user", f"[User sent an image] Caption: {caption}")
+        add_to_history(chat_id, "model", ai_response)
+
+        chunks = split_text(ai_response)
+        for chunk in chunks:
+            try:
+                await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(chunk)
+
+    except Exception as e:
+        logger.error(f"Error analyzing image: {e}")
+        await update.message.reply_text(f"❌ Could not analyze the image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+
+
+
 def main():
     """Start and run the Telegram bot."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_telegram_bot_token_here":
@@ -281,6 +328,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     logger.info("🤖 Bot is polling for updates... Press Ctrl+C to stop.")
