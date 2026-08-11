@@ -9,6 +9,7 @@ import asyncio
 from typing import Dict, List, Any
 from dotenv import load_dotenv
 from PIL import Image
+from gtts import gTTS
 
 # Load environment variables from .env file
 load_dotenv()
@@ -310,6 +311,40 @@ def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image
     raise last_error
 
 
+def _call_gemini_voice(chat_id: int, first_name: str, voice_bytes: bytes) -> str:
+    """Worker function for voice note audio transcription & analysis."""
+    user_mem = get_user_memory(chat_id, first_name)
+
+    prompt_context = (
+        f"You are FRIDAY (Tony Stark's AI assistant). The user {first_name} sent a voice message.\n"
+        f"Listen to the audio, understand what {first_name} is saying (English, Hindi, or Hinglish), and respond helpfully as FRIDAY keeping past conversation context in mind."
+    )
+
+    candidate_models = [GEMINI_MODEL_NAME, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+    last_error = None
+
+    for model_name in candidate_models:
+        try:
+            if hasattr(ai_client, "models"):
+                try:
+                    from google.genai import types
+                    audio_part = types.Part.from_bytes(data=bytes(voice_bytes), mime_type="audio/ogg")
+                    res = ai_client.models.generate_content(model=model_name, contents=[prompt_context, audio_part])
+                    return res.text
+                except Exception:
+                    res = ai_client.models.generate_content(model=model_name, contents=[prompt_context, {"mime_type": "audio/ogg", "data": bytes(voice_bytes)}])
+                    return res.text
+            else:
+                model = ai_client.GenerativeModel(model_name)
+                res = model.generate_content([prompt_context, {"mime_type": "audio/ogg", "data": bytes(voice_bytes)}])
+                return res.text
+        except Exception as err:
+            last_error = err
+            continue
+
+    raise last_error
+
+
 # ---------------- Telegram Bot Handlers ----------------
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
@@ -460,13 +495,65 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chunks = split_text(ai_response)
         for chunk in chunks:
             try:
-                await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+                sent_msg = await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+                track_ui_message_id(chat_id, sent_msg.message_id)
             except Exception:
-                await update.message.reply_text(chunk)
+                sent_msg = await update.message.reply_text(chunk)
+                track_ui_message_id(chat_id, sent_msg.message_id)
 
     except Exception as e:
-        logger.error(f"Error analyzing image: {e}")
-        await update.message.reply_text(f"❌ Could not analyze the image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        logger.error(f"Error analyzing photo: {e}")
+        await update.message.reply_text(f"❌ Could not analyze image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+
+
+async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for voice notes and audio messages."""
+    if not update.message or (not update.message.voice and not update.message.audio):
+        return
+
+    chat_id = update.effective_chat.id
+    first_name = update.effective_user.first_name if update.effective_user else "Friend"
+
+    await check_and_autoclean_session(context, chat_id, update.message.message_id)
+    track_ui_message_id(chat_id, update.message.message_id)
+
+    # Show voice action indicator
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.RECORD_VOICE)
+
+    try:
+        voice_obj = update.message.voice or update.message.audio
+        voice_file = await voice_obj.get_file()
+        voice_bytes = await voice_file.download_as_bytearray()
+
+        # 1. AI processing with Gemini Audio
+        ai_response = await asyncio.to_thread(_call_gemini_voice, chat_id, first_name, voice_bytes)
+        append_to_user_history(chat_id, "[User sent a voice message]", ai_response, first_name)
+
+        # 2. Reply in Text
+        chunks = split_text(ai_response)
+        for chunk in chunks:
+            try:
+                sent_msg = await update.message.reply_text(f"🎙️ <b>FRIDAY Transcribed Reply:</b>\n\n{chunk}", parse_mode=ParseMode.HTML)
+                track_ui_message_id(chat_id, sent_msg.message_id)
+            except Exception:
+                sent_msg = await update.message.reply_text(f"🎙️ FRIDAY Transcribed Reply:\n\n{chunk}")
+                track_ui_message_id(chat_id, sent_msg.message_id)
+
+        # 3. Generate Audio Voice Note Reply using gTTS
+        try:
+            audio_io = io.BytesIO()
+            lang_code = "hi" if any('\u0900' <= c <= '\u097F' for c in ai_response) else "en"
+            tts = gTTS(text=ai_response[:400], lang=lang_code)
+            tts.write_to_fp(audio_io)
+            audio_io.seek(0)
+            voice_reply = await update.message.reply_voice(voice=audio_io, caption="🗣️ FRIDAY Voice Note")
+            track_ui_message_id(chat_id, voice_reply.message_id)
+        except Exception as tts_err:
+            logger.warning(f"gTTS audio generation error: {tts_err}")
+
+    except Exception as e:
+        logger.error(f"Error processing voice message: {e}")
+        await update.message.reply_text(f"❌ Could not process voice message:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
 
 def main():
@@ -487,6 +574,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
