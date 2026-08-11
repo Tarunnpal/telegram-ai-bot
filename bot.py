@@ -6,6 +6,8 @@ import logging
 import io
 import time
 import asyncio
+import urllib.parse
+import requests
 from datetime import datetime
 from typing import Dict, List, Any
 from dotenv import load_dotenv
@@ -73,7 +75,18 @@ except ImportError:
         logger.warning("⚠️ Neither 'google-genai' nor 'google-generativeai' module found.")
 
 
-# ---------------- Persistent Memory Manager ----------------
+def _generate_ai_image_bytes(prompt: str) -> bytes:
+    """Worker function to generate AI image bytes using Pollinations AI Engine."""
+    encoded_prompt = urllib.parse.quote(prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    res = requests.get(url, headers=headers, timeout=25)
+    if res.status_code == 200 and len(res.content) > 1000:
+        return res.content
+    raise ValueError(f"Image generation server returned HTTP {res.status_code}")
+
+
+# ---------------- Telegram Bot Handlers ----------------
 
 def load_all_memories() -> Dict[str, Any]:
     """Load all persistent user memory from JSON file."""
@@ -267,7 +280,7 @@ def _call_gemini_with_full_context(chat_id: int, first_name: str, prompt: str) -
 
     full_prompt = "\n\n".join(contents)
 
-    candidate_models = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+    candidate_models = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-flash-latest"]
     last_error = None
 
     for model_name in candidate_models:
@@ -378,8 +391,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "💡 <b>FRIDAY AI Assistant Guide</b>\n\n"
         "1. <b>Chatting & QA</b>: Send any text message to ask questions, write code, or brainstorm.\n"
-        "2. <b>Image Analysis</b>: Send any photo to analyze or ask questions about it.\n"
-        "3. <b>Persistent Memory 🧠</b>: Your chat context and past conversations are permanently saved across sessions."
+        "2. <b>Image Generation 🎨</b>: Type <code>/image a cyberpunk car</code> or <code>/draw a cute puppy</code> to generate stunning AI photos!\n"
+        "3. <b>Image Analysis 📸</b>: Send any photo to analyze or ask questions about it.\n"
+        "4. <b>Train Info & Timetables 🚆</b>: Ask for trains between cities or type any 5-digit Train Number (e.g. 12952) for timings & live GPS status.\n"
+        "5. <b>Persistent Memory 🧠</b>: Your chat context and past conversations are permanently saved."
     )
     if update.message:
         await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
@@ -406,6 +421,33 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(status_text, parse_mode=ParseMode.HTML)
     elif update.callback_query and update.callback_query.message:
         await update.callback_query.message.reply_text(status_text, parse_mode=ParseMode.HTML)
+
+
+async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /image or /draw command to generate AI photos."""
+    if not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    prompt = " ".join(context.args) if context.args else ""
+
+    await check_and_autoclean_session(context, chat_id, update.message.message_id)
+    track_ui_message_id(chat_id, update.message.message_id)
+
+    if not prompt:
+        await update.message.reply_text("🎨 <b>Usage:</b> <code>/image a futuristic cyberpunk car in Tokyo</code>", parse_mode=ParseMode.HTML)
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+
+    try:
+        image_bytes = await asyncio.to_thread(_generate_ai_image_bytes, prompt)
+        caption_text = f"🎨 <b>AI Generated Image by FRIDAY</b>\n<i>Prompt: {html.escape(prompt)}</i>"
+        sent_photo = await update.message.reply_photo(photo=io.BytesIO(image_bytes), caption=caption_text, parse_mode=ParseMode.HTML)
+        track_ui_message_id(chat_id, sent_photo.message_id)
+    except Exception as e:
+        logger.error(f"Error generating AI image: {e}")
+        await update.message.reply_text(f"❌ Could not generate image:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
 
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,12 +478,29 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     first_name = update.effective_user.first_name if update.effective_user else "Friend"
-    user_text = update.message.text
+    user_text = update.message.text.strip()
 
     # Auto-clean screen bubbles if user is returning after closing Telegram app
     await check_and_autoclean_session(context, chat_id, update.message.message_id)
-
     track_ui_message_id(chat_id, update.message.message_id)
+
+    # Detect natural image generation requests
+    lower_text = user_text.lower()
+    image_triggers = ["generate image", "create image", "draw image", "make photo", "generate photo", "draw a", "image of "]
+    if any(lower_text.startswith(t) or lower_text.startswith(f"friday {t}") for t in image_triggers):
+        img_prompt = user_text
+        for t in ["friday", "generate image of", "generate image", "create image of", "create image", "draw image of", "draw image", "make photo of", "make photo", "image of"]:
+            img_prompt = re.sub(rf"(?i)^{t}\s*", "", img_prompt).strip()
+        if img_prompt:
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+            try:
+                image_bytes = await asyncio.to_thread(_generate_ai_image_bytes, img_prompt)
+                caption_text = f"🎨 <b>AI Generated Image by FRIDAY</b>\n<i>Prompt: {html.escape(img_prompt)}</i>"
+                sent_photo = await update.message.reply_photo(photo=io.BytesIO(image_bytes), caption=caption_text, parse_mode=ParseMode.HTML)
+                track_ui_message_id(chat_id, sent_photo.message_id)
+                return
+            except Exception as e:
+                logger.error(f"Error auto generating image: {e}")
 
     # Show typing indicator to user
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
@@ -516,6 +575,8 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("image", image_command))
+    app.add_handler(CommandHandler("draw", image_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
