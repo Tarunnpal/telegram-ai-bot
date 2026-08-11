@@ -145,7 +145,7 @@ def track_ui_message_id(chat_id: int, message_id: int):
 
 
 async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
-    """Deletes ALL old chat message bubbles (up to 100 IDs back) from Telegram screen WITHOUT touching AI memory."""
+    """Deletes ALL old chat message bubbles with a cool 50ms staggered visual wipe transition on Telegram."""
     memories = load_all_memories()
     key = str(chat_id)
     tracked_ids = memories.get(key, {}).get("ui_message_ids", [])
@@ -160,9 +160,11 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         min_id = max(1, max_id - 100)
         target_ids.update(range(max_id, min_id, -1))
 
+    # 50ms micro-delay between message deletions creates a cool visual upward vanishing transition!
     for m_id in sorted(target_ids, reverse=True):
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=m_id)
+            await asyncio.sleep(0.04)
         except Exception:
             pass
 
@@ -171,8 +173,8 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         save_all_memories(memories)
 
 
-# Auto-clean screen if user closes app and comes back (5 seconds gap)
-INACTIVITY_AUTO_CLEAN_GAP = 5
+# Auto-clean screen if user closes app and comes back after session gap (3 minutes / 180 seconds)
+INACTIVITY_AUTO_CLEAN_GAP = 180
 
 
 async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
@@ -303,10 +305,9 @@ def _call_gemini_photo(chat_id: int, first_name: str, caption: str, image: Image
 # ---------------- Telegram Bot Handlers ----------------
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
-    """Returns main interactive keyboard buttons."""
+    """Returns main interactive keyboard buttons (clean, uncluttered UI)."""
     keyboard = [
         [
-            InlineKeyboardButton("🧹 Clean Screen", callback_data="clean_screen"),
             InlineKeyboardButton("❓ Help", callback_data="show_help"),
             InlineKeyboardButton("⚙️ Status", callback_data="show_status")
         ]
