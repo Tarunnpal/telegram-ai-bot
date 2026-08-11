@@ -181,8 +181,8 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         save_all_memories(memories)
 
 
-# Auto-clean screen if user closes app and comes back (60 seconds session gap)
-INACTIVITY_AUTO_CLEAN_GAP = 60
+# Auto-clean screen ONLY when user pauses for 5+ minutes (300 seconds) or closes app for 5+ minutes
+INACTIVITY_AUTO_CLEAN_GAP = 300
 
 
 async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_id: int, current_msg_id: int = None):
