@@ -4,6 +4,7 @@ import json
 import html
 import logging
 import io
+import time
 import asyncio
 from typing import Dict, List, Any
 from dotenv import load_dotenv
@@ -155,6 +156,28 @@ async def clean_chat_screen_ui(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
             except Exception:
                 pass
         memories[key]["ui_message_ids"] = []
+        save_all_memories(memories)
+
+
+# Auto-clean screen if user closes app and comes back after inactivity gap (90 seconds)
+INACTIVITY_AUTO_CLEAN_GAP = 90
+
+
+async def check_and_autoclean_session(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """If user returns after closing app / inactivity gap, auto-wipe old screen bubbles while keeping memory 100% intact."""
+    memories = load_all_memories()
+    key = str(chat_id)
+    now = time.time()
+    if key in memories:
+        last_active = memories[key].get("last_active_timestamp", 0)
+        if last_active > 0 and (now - last_active) > INACTIVITY_AUTO_CLEAN_GAP:
+            await clean_chat_screen_ui(context, chat_id)
+        memories[key]["last_active_timestamp"] = now
+        save_all_memories(memories)
+    else:
+        get_user_memory(chat_id)
+        memories = load_all_memories()
+        memories[key]["last_active_timestamp"] = now
         save_all_memories(memories)
 
 
@@ -368,6 +391,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = update.effective_user.first_name if update.effective_user else "Friend"
     user_text = update.message.text
 
+    # Auto-clean screen bubbles if user is returning after closing Telegram app
+    await check_and_autoclean_session(context, chat_id)
+
     track_ui_message_id(chat_id, update.message.message_id)
 
     # Show typing indicator to user
@@ -396,6 +422,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     first_name = update.effective_user.first_name if update.effective_user else "Friend"
     caption = update.message.caption or "Analyze this image and describe what you see in detail. Also answer any questions if present."
+
+    await check_and_autoclean_session(context, chat_id)
+    track_ui_message_id(chat_id, update.message.message_id)
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
